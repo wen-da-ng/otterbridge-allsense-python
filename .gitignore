@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+dist/
+build/
+_testkit/
+allsense_log.csv
+photo.jpg
+CLAUDE.local.md
