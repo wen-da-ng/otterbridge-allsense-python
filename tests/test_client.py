@@ -242,3 +242,42 @@ def test_commands(phone, phone_server):
     phone_server.allow_commands = False
     with pytest.raises(allsense.AllSenseError, match="Robot can control the phone"):
         phone.command("ping")
+
+
+def _found(*names):
+    from allsense.discovery import FoundPhone
+
+    return [FoundPhone(name=n, device=n.split()[-1], host="127.0.0.1", port=port, protocol="0") for n, port in names]
+
+
+def test_discovery_refuses_to_guess_between_phones(monkeypatch):
+    # Anyone on the network can announce _allsense._tcp; the token must not go to whichever sorts first.
+    monkeypatch.setattr("allsense.discovery.discover", lambda timeout=3.0: _found(("AllSense a", 1), ("AllSense rover", 2)))
+    with pytest.raises(allsense.AllSenseError, match="Found 2 AllSense phones.*AllSense a.*AllSense rover.*link"):
+        allsense.connect(token=TOKEN)
+    with pytest.raises(allsense.AllSenseError, match="called 'nope'"):
+        allsense.connect(token=TOKEN, device="nope")
+
+
+def test_discovery_with_one_phone_or_a_device_name(phone_server, monkeypatch):
+    real = ("AllSense " + DEVICE, phone_server.port)
+    monkeypatch.setattr("allsense.discovery.discover", lambda timeout=3.0: _found(real))
+    with allsense.connect(token=TOKEN, name="pytest") as p:
+        assert p.device == DEVICE
+    monkeypatch.setattr("allsense.discovery.discover", lambda timeout=3.0: _found(("AllSense other", 1), real))
+    with allsense.connect(token=TOKEN, name="pytest", device=DEVICE) as p:
+        assert p.device == DEVICE
+
+
+def test_errors_never_show_the_token(monkeypatch):
+    secret = "s3cr3t-token"
+
+    def failing(uri, **kw):
+        raise ValueError(f"isn't a valid URI: {uri}")
+
+    monkeypatch.setattr("allsense.client.ws_connect", failing)
+    with pytest.raises(allsense.AllSenseError) as e:
+        allsense.connect(f"http://127.0.0.1:1/?token={secret}", reconnect=False)
+    assert secret not in str(e.value) and "token=***" in str(e.value)
+    assert e.value.__cause__ is None or secret not in str(e.value.__cause__)
+    assert allsense.client.redact(f"GET /camera/x.jpg?size=1&token={secret}&fps=2") == "GET /camera/x.jpg?size=1&token=***&fps=2"

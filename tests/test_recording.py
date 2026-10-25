@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import shutil
 import zipfile
@@ -48,3 +50,44 @@ def test_arrays_and_errors(tmp_path):
     os.remove(tmp_path / "r" / "meta.json")
     with pytest.raises(ValueError, match="meta.json"):
         allsense.load_recording(str(tmp_path / "r"))
+
+
+def test_zip_reads_only_listed_files_within_limits(tmp_path, monkeypatch):
+    import allsense.recording as recording
+
+    folder = tmp_path / "r"
+    _write_example(str(folder), STREAMS)
+    archive = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in os.listdir(folder):
+            z.write(folder / name, name)
+        z.writestr("unlisted.bin", b"\0" * (4 * 1024 * 1024))  # compresses to a few KB
+    monkeypatch.setattr(recording, "MAX_FILE_BYTES", 1024 * 1024)
+    rec = allsense.load_recording(str(archive))  # the unlisted member is never read
+    assert set(rec.streams) == {"accelerometer", "position"}
+
+    # A listed file over the limit is refused, by its declared size and while reading.
+    monkeypatch.setattr(recording, "MAX_FILE_BYTES", 50)
+    with pytest.raises(ValueError, match="accelerometer.csv.*too large"):
+        allsense.load_recording(str(archive))
+    monkeypatch.setattr(recording, "MAX_FILE_BYTES", 1024 * 1024)
+    monkeypatch.setattr(recording, "MAX_TOTAL_BYTES", 100)
+    with pytest.raises(ValueError, match="too large"):
+        allsense.load_recording(str(archive))
+
+
+def test_limit_holds_even_if_the_zip_lies_about_sizes(tmp_path):
+    from allsense.recording import _Limited
+
+    with pytest.raises(ValueError, match="big.csv in this recording is too large"):
+        _Limited(io.BytesIO(b"x" * 100), "big.csv", 10, [10 ** 9]).read()
+
+
+def test_meta_cannot_point_outside_the_recording(tmp_path):
+    _write_example(str(tmp_path / "rec"), STREAMS)
+    (tmp_path / "secret.csv").write_text("t_ns,time_unix,x\n1,0.1,42\n", encoding="utf-8")
+    meta_path = tmp_path / "rec" / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["streams"][0]["file"] = "../secret.csv"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert set(allsense.load_recording(str(tmp_path / "rec")).streams) == {"position"}

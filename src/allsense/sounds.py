@@ -14,8 +14,10 @@ import urllib.error
 import urllib.request
 from typing import List, Optional
 
-from .camera import camera_url
-from .client import AllSenseError
+from .camera import MAX_ERROR_BYTES, camera_url, read_limited
+from .client import AllSenseError, redact
+
+MAX_REPLY_BYTES = 4 * 1024 * 1024
 
 FORMATS = ("wav", "mp3", "ogg", "m4a", "aac", "flac", "opus")
 
@@ -43,9 +45,9 @@ def list_sounds(ws_url: str, timeout: float) -> List[dict]:
 def _call(req: urllib.request.Request, timeout: float) -> bytes:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
+            return read_limited(r, MAX_REPLY_BYTES, "The phone's reply")
     except urllib.error.HTTPError as e:
         # The phone explains (commands off, bad name, too big…).
-        raise AllSenseError(f"Sounds: {e.read().decode(errors='replace').strip() or e.reason}") from None
+        raise AllSenseError(f"Sounds: {e.read(MAX_ERROR_BYTES).decode(errors='replace').strip() or e.reason}") from None
     except OSError as e:
-        raise AllSenseError(f"Can't reach the phone at {req.full_url.split('?')[0]}: {e}") from e
+        raise AllSenseError(f"Can't reach the phone at {req.full_url.split('?')[0]}: {redact(e)}") from None

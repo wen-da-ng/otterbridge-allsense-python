@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import sys
 import time
+import unicodedata
 
 from .client import AllSenseError, connect
+
+
+def clean(text) -> str:
+    """``text`` without control characters, so names from the phone can't send escape codes to the terminal."""
+    return "".join(c for c in str(text) if unicodedata.category(c)[0] != "C")
+
+
+def csv_row(sample, name: str) -> list:
+    """One ``--csv`` line: time,name,seq,values…"""
+    return [f"{sample.time:.6f}", clean(name), sample.seq] + ["" if v is None else repr(v) for v in sample.values]
 
 
 def main(argv=None) -> int:
@@ -44,11 +56,11 @@ def main(argv=None) -> int:
             if not found:
                 print("No phones found. Is streaming started, and is this computer on the same network?")
             for f in found:
-                print(f"{f.name}\tdevice={f.device}\t{f.url}")
+                print(f"{clean(f.name)}\tdevice={clean(f.device)}\t{clean(f.url)}")
             if found:
                 # The token is never broadcast; anyone nearby could connect otherwise.
                 print("\nAdd the pairing token from the app (Home → Connect), e.g. "
-                      f"{found[0].url}?token=…  (or copy the full link shown there)")
+                      f"{clean(found[0].url)}?token=…  (or copy the full link shown there)")
             return 0
         if args.cmd == "mcap":
             from .mcap_export import export_mcap
@@ -64,17 +76,18 @@ def main(argv=None) -> int:
         with connect(args.url, name="allsense-cli") as phone:
             if args.cmd == "list":
                 streams = phone.streams(all=args.all)
-                width = max((len(s.name) for s in streams), default=4)
-                print(f"{phone.device}: {len(streams)} streams" + ("" if args.all else " (Basic; --all for everything)"))
+                width = max((len(clean(s.name)) for s in streams), default=4)
+                print(f"{clean(phone.device)}: {len(streams)} streams" + ("" if args.all else " (Basic; --all for everything)"))
                 for s in streams:
-                    fields = ",".join(s.fields)
-                    print(f"  {s.name:<{width}}  {s.type}  [{fields}] {s.unit}".rstrip())
+                    fields = clean(",".join(s.fields))
+                    print(f"  {clean(s.name):<{width}}  {clean(s.type)}  [{fields}] {clean(s.unit)}".rstrip())
                 return 0
 
             subs = phone.subscribe(args.names, rate=args.rate)
             n = 0
+            out = csv.writer(sys.stdout, lineterminator="\n")
             if args.csv:
-                print("time,name,seq,values")
+                out.writerow(["time", "name", "seq", "values"])
             while args.count == 0 or n < args.count:
                 got = False
                 for s in subs:
@@ -85,16 +98,15 @@ def main(argv=None) -> int:
                         got = True
                         n += 1
                         if args.csv:
-                            vals = ",".join("" if v is None else repr(v) for v in sample.values)
-                            print(f"{sample.time:.6f},{s.info.name},{sample.seq},{vals}")
+                            out.writerow(csv_row(sample, s.info.name))
                         else:
-                            vals = "  ".join(f"{k}={v:.4f}" if v is not None else f"{k}=nan" for k, v in sample.as_dict().items())
-                            print(f"{s.info.name:<20} {vals}")
+                            vals = "  ".join(f"{clean(k)}={v:.4f}" if v is not None else f"{clean(k)}=nan" for k, v in sample.as_dict().items())
+                            print(f"{clean(s.info.name):<20} {vals}")
                 if not got:
                     time.sleep(0.005)
             return 0
     except AllSenseError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {clean(e)}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 0

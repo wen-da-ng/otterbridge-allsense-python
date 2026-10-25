@@ -10,6 +10,7 @@ import difflib
 import itertools
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -258,6 +259,14 @@ def _sensor_type(d: dict) -> Optional[int]:
     return None
 
 
+_TOKEN_RE = re.compile(r"token=[^&\s'\"]*")
+
+
+def redact(text: str) -> str:
+    """``text`` with every ``token=…`` value hidden, for error messages and logs."""
+    return _TOKEN_RE.sub("token=***", str(text))
+
+
 def _ws_url(url: str, token: Optional[str]) -> str:
     """Accepts the app's link (http://ip:port/?token=…), a ws:// URL, "ip" or "ip:port"."""
     if "://" not in url:
@@ -503,9 +512,9 @@ class Phone:
             self._ws = ws_connect(self.url, open_timeout=self.timeout, close_timeout=1, max_size=2 ** 22,
                                   compression=None).__enter__()
         except OSError as e:
-            raise AllSenseError(f"Can't reach the phone at {self.url.split('?')[0]}: {e}. Is streaming started, and are you on the same network?") from e
+            raise AllSenseError(f"Can't reach the phone at {self.url.split('?')[0]}: {redact(e)}. Is streaming started, and are you on the same network?")                 from _keep_cause(e)
         except Exception as e:
-            raise AllSenseError(f"Connection refused by the phone ({e}). Check the token in the link.") from e
+            raise AllSenseError(f"Connection refused by the phone ({redact(e)}). Check the token in the link.") from _keep_cause(e)
         self._last_rx = time.monotonic()
         self._send({"op": "hello", "client": self.client_name})
 
@@ -656,14 +665,36 @@ def as_arrays(samples: Sequence[Sample]):
     return times, values
 
 
+def _keep_cause(e: BaseException) -> Optional[BaseException]:
+    """``e`` as the cause of our error, unless its message (shown in tracebacks) could contain the token."""
+    return None if "token=" in str(e) else e
+
+
+def _pick_discovered(found, device: Optional[str]):
+    """The one discovered phone to send the token to; refuses to guess between several."""
+    if device is not None:
+        found = [f for f in found if device in (f.device, f.name)]
+    if not found:
+        which = f"called {device!r} " if device is not None else ""
+        raise AllSenseError(f"No AllSense phone {which}found on this network. Pass the link from the app (Home → Connect) instead.")
+    if len(found) > 1:
+        listed = "; ".join(f"{f.name} (device={f.device!r}, {f.host}:{f.port})" for f in found)
+        raise AllSenseError(f"Found {len(found)} AllSense phones: {listed}. Pass the link from the app (Home → Connect) "
+                            "to choose, or device=… with the device name set in the app.")
+    return found[0]
+
+
 def connect(url: Optional[str] = None, token: Optional[str] = None, *, name: str = "python",
             timeout: float = 5.0, reconnect: bool = True, stall_timeout: float = 6.0,
-            wait: Optional[float] = None) -> Phone:
+            wait: Optional[float] = None, device: Optional[str] = None) -> Phone:
     """Connects to a phone.
 
-    ``url`` is the link from the app (Home → Connect) (it contains the token). Without a URL, the first
-    phone found on the local network is used (needs ``pip install allsense[discovery]``) and
-    ``token`` is required.
+    ``url`` is the link from the app (Home → Connect) (it contains the token). Without a URL, the
+    phone is found on the local network (needs ``pip install allsense[discovery]``), ``token`` is
+    required, and ``device`` picks one by the device name set in the app. More than one phone found
+    (after ``device``) is an error rather than a guess. Prefer the link: discovery isn't
+    authenticated, so a computer on the same network that announces itself as an AllSense phone
+    would receive the token.
 
     Once connected, the client reconnects by itself if the phone goes away. ``wait`` covers the
     start: keep trying for that many seconds while the phone isn't reachable yet (``float("inf")``
@@ -673,7 +704,8 @@ def connect(url: Optional[str] = None, token: Optional[str] = None, *, name: str
         deadline = time.monotonic() + wait
         while True:
             try:
-                return connect(url, token, name=name, timeout=timeout, reconnect=reconnect, stall_timeout=stall_timeout)
+                return connect(url, token, name=name, timeout=timeout, reconnect=reconnect, stall_timeout=stall_timeout,
+                               device=device)
             except TokenError:
                 raise
             except AllSenseError as e:
@@ -684,8 +716,5 @@ def connect(url: Optional[str] = None, token: Optional[str] = None, *, name: str
     if url is None:
         from .discovery import discover
 
-        found = discover(timeout=timeout)
-        if not found:
-            raise AllSenseError("No AllSense phone found on this network. Pass the link from the app (Home → Connect) instead.")
-        url = found[0].url
+        url = _pick_discovered(discover(timeout=timeout), device).url
     return Phone(url, token, name=name, timeout=timeout, reconnect=reconnect, stall_timeout=stall_timeout)

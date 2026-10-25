@@ -50,3 +50,41 @@ def test_streams_from_the_fake_phone(phone):
     with phone.camera("back", codec="h264") as cam:
         units = list(cam)
     assert [u.keyframe for u in units[:3]] == [False, True, False] and b"\x67" in units[1].data
+
+
+def test_catalog_paths_must_stay_on_the_phone(phone):
+    from allsense.camera import check_path
+
+    for bad in ("@evil.example/x.mjpg", "evil.example/x", "http://evil.example/x", "/a\\b", "/a\r\nHost: x", "/x@y"):
+        with pytest.raises(allsense.AllSenseError, match="Unusable media path"):
+            camera_url("ws://10.0.0.2:8765/ws?token=abc", bad)
+    assert check_path("/camera/back.mjpg") == "/camera/back.mjpg"
+    phone.find("back").raw["url"] = "@evil.example/steal"
+    with pytest.raises(allsense.AllSenseError, match="Unusable media path"):
+        phone.snapshot("back")
+
+
+def test_frame_and_snapshot_sizes_are_capped(monkeypatch):
+    import allsense.camera as camera
+
+    huge = b"--f\r\nContent-Length: %d\r\n\r\n" % (camera.MAX_FRAME_BYTES + 1)
+    with pytest.raises(allsense.AllSenseError, match="refused"):
+        list(read_frames(io.BytesIO(huge)))
+    with pytest.raises(allsense.AllSenseError, match="Content-Length"):
+        list(read_frames(io.BytesIO(b"--f\r\nContent-Length: lots\r\n\r\n")))
+    with pytest.raises(allsense.AllSenseError, match="overlong"):
+        list(read_frames(io.BytesIO(b"--f\r\nX-Junk: " + b"a" * 10000)))
+
+    class Response(io.BytesIO):
+        headers = {}
+
+    monkeypatch.setattr(camera, "MAX_SNAPSHOT_BYTES", 10)
+    monkeypatch.setattr(camera, "_open", lambda url, timeout: Response(b"x" * 11))
+    with pytest.raises(allsense.AllSenseError, match="Snapshot larger than 10"):
+        camera.snapshot("http://h/x.jpg", 1)
+    Response.headers = {"Content-Length": "999"}
+    with pytest.raises(allsense.AllSenseError, match="Snapshot of 999 bytes refused"):
+        camera.snapshot("http://h/x.jpg", 1)
+    Response.headers = {}
+    monkeypatch.setattr(camera, "_open", lambda url, timeout: Response(b"x" * 10))
+    assert camera.snapshot("http://h/x.jpg", 1) == b"x" * 10

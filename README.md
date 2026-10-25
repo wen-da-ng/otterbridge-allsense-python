@@ -29,6 +29,8 @@ pip install "allsense[all] @ git+https://github.com/wen-da-ng/otterbridge-allsen
    - **USB tethering:** pick "USB tethering" in the app to get its link.
    - **adb:** run `adb forward tcp:8766 tcp:8765`, then use `http://localhost:8766/?token=…`.
 
+Without a link, `allsense.connect(token="…")` finds the phone on the network (`[discovery]`); with several phones it stops and lists them (`device="rover"` picks one). Prefer the link: discovery isn't authenticated, so a computer on the same network posing as a phone would receive the token.
+
 ## Command line
 
 ```
